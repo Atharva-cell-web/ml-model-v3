@@ -1,0 +1,39 @@
+venv/
+.venv/
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+*.pkl
+*.joblib
+*.h5
+*.onnx
+
+# Data and Models
+data/
+datasets/
+models/
+processed/
+new_processed_data/
+
+# Frontend
+node_modules/
+.next/
+build/
+dist/
+.env
+.env.local
+
+# Logs and Metrics
+logs/
+*.log
+
+# Large files
+*.csv
+*.parquet
+*.zip
+*.tar.gz
+huge_files.txt
+
+# Archives
+archive/
+te connectivity 3.zip
