@@ -1,81 +1,72 @@
-# Manufacturing Scrap Prediction System (ML v3/v4)
+# Manufacturing Scrap Prediction System (ML v4)
 
-This repository contains the source code and machine learning scripts for predicting manufacturing scrap events.
+This repository contains the source code, backend API, and frontend dashboard for predicting manufacturing scrap events in real-time.
 
-## 🚀 Getting Started
+## 📦 1. Required Files from Google Drive
 
-### 1. Prerequisites
-- Python 3.9+
-- [Git](https://git-scm.com/)
+To keep the repository lightweight, large datasets, trained machine learning models, and secret environment variables are **not** hosted on GitHub. 
 
-### 2. Setup Environment
-Clone the repository and set up a virtual environment:
+Before running the project, please download the required files from the **[Insert Google Drive Link Here]** and place them exactly as shown below:
 
-```bash
-# Create a virtual environment
-python -m venv venv
+- `models/` ➔ Place inside the `te connectivity 3/` directory.
+- `new_processed_data/` ➔ Place inside the `te connectivity 3/` directory.
+- `processed/` ➔ Place inside the `te connectivity 3/` directory.
+- `.env` files ➔ Place inside `te connectivity 3/frontend/` and `te connectivity 3/backend/` (if provided in the drive).
 
-# Activate the virtual environment
-# On Windows:
-.\venv\Scripts\activate
-# On macOS/Linux:
-source venv/bin/activate
+---
 
-# Install dependencies
-pip install -r "te connectivity 3/requirements.txt"
-```
+## 🚀 2. Getting Started
+
+### Prerequisites
+- [Python 3.9+](https://www.python.org/downloads/) (for the backend and ML models)
+- [Node.js & npm](https://nodejs.org/) (for the frontend dashboard)
+
+### Backend Setup (Python API)
+1. Open a terminal and navigate to the project directory:
+   ```bash
+   cd "te connectivity 3"
+   ```
+2. Create and activate a virtual environment:
+   ```bash
+   # Windows
+   python -m venv .venv
+   .\.venv\Scripts\activate
+   
+   # macOS/Linux
+   python3 -m venv .venv
+   source .venv/bin/activate
+   ```
+3. Install the required Python dependencies:
+   ```bash
+   pip install -r requirements.txt
+   ```
+4. Start the backend server:
+   ```bash
+   python -m uvicorn backend.api:app --host 0.0.0.0 --port 8000 --reload
+   ```
+
+### Frontend Setup (Dashboard)
+1. Open a **new, separate terminal** and navigate to the frontend directory:
+   ```bash
+   cd "te connectivity 3/frontend"
+   ```
+2. Install the Node.js dependencies:
+   ```bash
+   npm install
+   ```
+3. Start the frontend development server:
+   ```bash
+   npm run dev
+   ```
+4. Open your browser and navigate to `http://localhost:3000` (or whichever port is shown in the terminal).
 
 ---
 
 ## 📂 Project Structure
 
-- `te connectivity 3/`: Primary development folder
-  - `scripts/`: Python scripts for data processing and model training
-  - `backend/`: API and server-side logic
-  - `frontend/`: Dashboard and UI components
-- `processed/`: (Ignored) Processed sensor and parameter data
-- `new_processed_data/`: (Ignored) v4/v4.5 updated datasets
-
----
-
-## 📦 Heavy Files (Google Drive Required)
-
-To keep the repository lightweight, large datasets and trained models (>50MB) are **not** included in this Git repository. Please download these from the provided Google Drive link and place them in their respective directories:
-
-| File Name | Destination Directory | Description |
-|-----------|-----------------------|-------------|
-| `te connectivity 3.zip` | Root `./` | Full project backup including all data |
-| `rolling_features.parquet` | `te connectivity 3/new_processed_data/` | Pre-engineered rolling features for training |
-| `M607-30_Jan_sensor_features.parquet` | `te connectivity 3/processed/sensor/` | Large sensor feature dataset |
-| `M231Jan_sensor_features.parquet` | `te connectivity 3/processed/sensor/` | Sensor feature dataset (Machine 231) |
-
----
-
-## 🛠️ Running the Model
-
-### To retrain the base models:
-```bash
-python "te connectivity 3/scripts/retrain_base_model_v3.py"
-python "te connectivity 3/scripts/per_machine_models_v3.py"
-```
-
-### To generate predictions/results:
-```bash
-python "te connectivity 3/scripts/regenerate_feb_results_v3.py"
-```
-
-### To build the latest v4.5f dataset:
-```bash
-python "te connectivity 3/scripts/build_future_dataset_v4.5f.py"
-```
-
----
-
-## 📊 Version Information
-- **Current Stable Version**: v3.0 (February baseline)
-- **Latest Work-in-Progress**: v4.5f (Multi-horizon forecasting)
-
----
-
-## 📧 Support
-If you have any questions or need access to the data, please contact the repository owner.
+- `te connectivity 3/`
+  - `backend/`: FastAPI server, data access layers, and real-time scrap checkers.
+  - `frontend/`: React dashboard for data visualization and root cause analysis.
+  - `scripts/`: Data preprocessing, feature engineering, and ML training pipelines.
+  - `models/`: *(From Google Drive)* Saved LightGBM models, scalers, and SHAP explainers.
+  - `new_processed_data/` & `processed/`: *(From Google Drive)* Multi-horizon future datasets and generated baseline data.

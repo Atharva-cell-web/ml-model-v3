@@ -420,6 +420,92 @@ def _compute_root_causes(current_sensors: dict, current_safe_limits: dict):
     nearby_sorted = sorted(nearby, key=lambda item: item[1], reverse=True)
     return [sensor for sensor, _ in nearby_sorted[:3]], []
 
+def _sensor_matches_root_cause(sensor: str, root_causes: list) -> bool:
+    cause_text = " ".join(
+        str(item.get("cause", "")) for item in (root_causes or [])
+        if isinstance(item, dict)
+    )
+
+    if "Cycle Time" in cause_text and "Cycle_time" in sensor:
+        return True
+    if "Injection Pressure" in cause_text and "Injection_pressure" in sensor:
+        return True
+    if "Cylinder Temperature" in cause_text and "Cyl_tmp" in sensor:
+        return True
+    if "Peak Pressure" in cause_text and "Peak_pressure" in sensor:
+        return True
+    if "Switch Pressure" in cause_text and "Switch_pressure" in sensor:
+        return True
+    return False
+
+def _build_telemetry_grid(machine_df: pd.DataFrame, current_safe_limits: dict, root_cause_payload: list):
+    rows = []
+    if machine_df is None or machine_df.empty:
+        return rows
+
+    for sensor, limits in current_safe_limits.items():
+        if sensor not in machine_df.columns:
+            continue
+
+        series = pd.to_numeric(machine_df[sensor], errors="coerce")
+        series = series.replace([np.inf, -np.inf], np.nan).dropna()
+        if series.empty:
+            continue
+
+        current_value = float(series.iloc[-1])
+        baseline_idx = -5 if len(series) >= 5 else 0
+        baseline_value = float(series.iloc[baseline_idx])
+        trend_delta = float(current_value - baseline_value)
+
+        if trend_delta > 0:
+            trend_direction = "up"
+        elif trend_delta < 0:
+            trend_direction = "down"
+        else:
+            trend_direction = "flat"
+
+        safe_min = _safe_float(limits.get("min")) if "min" in limits else None
+        safe_max = _safe_float(limits.get("max")) if "max" in limits else None
+
+        span_candidates = []
+        if safe_min is not None and safe_max is not None:
+            span_candidates.append(abs(safe_max - safe_min))
+        if safe_max is not None:
+            span_candidates.append(abs(safe_max))
+        if safe_min is not None:
+            span_candidates.append(abs(safe_min))
+        span = max(max(span_candidates) if span_candidates else 1.0, 1.0)
+
+        status = "NORMAL"
+        if safe_max is not None and current_value > safe_max:
+            status = "EXCEEDED"
+        elif safe_min is not None and current_value < safe_min:
+            status = "EXCEEDED"
+        else:
+            near_lower = safe_min is not None and (current_value - safe_min) < (0.1 * span)
+            near_upper = safe_max is not None and (safe_max - current_value) < (0.1 * span)
+            if near_lower or near_upper:
+                status = "WARNING"
+
+        sparkline_series = series.tail(30).tolist()
+        sparkline = [float(v) for v in sparkline_series if np.isfinite(v)]
+
+        rows.append({
+            "sensor": sensor,
+            "value": float(current_value),
+            "status": status,
+            "safe_min": safe_min,
+            "safe_max": safe_max,
+            "trend_delta": float(trend_delta),
+            "trend_direction": trend_direction,
+            "sparkline": sparkline,
+            "is_root_cause": _sensor_matches_root_cause(sensor, root_cause_payload),
+        })
+
+    severity_rank = {"EXCEEDED": 3, "WARNING": 2, "NORMAL": 1}
+    rows.sort(key=lambda row: (not row["is_root_cause"], -severity_rank.get(row["status"], 0), row["sensor"]))
+    return rows
+
 def _infer_step_seconds(history: pd.DataFrame) -> int:
     if len(history) < 2:
         return 60
@@ -541,6 +627,7 @@ def build_control_room_payload(machine_id: str, time_window: int = 240, future_w
             "summary_stats": {"past_scrap_detected": 0, "future_scrap_predicted": 0},
             "current_health": {"status": "OFFLINE", "risk_score": 0.0, "root_causes": []},
             "root_causes": [],
+            "telemetry_grid": [],
             "timeline": [],
             "safe_limits": {},
         }
@@ -576,6 +663,7 @@ def build_control_room_payload(machine_id: str, time_window: int = 240, future_w
         {"cause": cause, "impact": float(impact)}
         for cause, impact in root_causes
     ]
+    telemetry_grid = _build_telemetry_grid(machine_df, current_safe_limits, root_cause_payload)
 
     if breached_sensors:
         status = "CRITICAL"
@@ -657,6 +745,7 @@ def build_control_room_payload(machine_id: str, time_window: int = 240, future_w
             "root_causes": [item["cause"] for item in root_cause_payload],
         },
         "root_causes": root_cause_payload,
+        "telemetry_grid": telemetry_grid,
         "timeline": timeline,
         "safe_limits": _clean_limit_payload(current_safe_limits),
     }

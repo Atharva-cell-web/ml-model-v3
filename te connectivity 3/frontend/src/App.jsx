@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+﻿import React, { useCallback, useEffect, useMemo, useState } from "react";
 import axios from "axios";
 import {
   CartesianGrid,
@@ -11,7 +11,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { Activity, AlertTriangle, CheckCircle2 } from "lucide-react";
+import { Activity, AlertTriangle, CheckCircle2, Flame } from "lucide-react";
 
 const API_BASE = "http://127.0.0.1:8000";
 const FUTURE_RISK_THRESHOLD = 0.6;
@@ -224,59 +224,18 @@ function RootCauseAnalyzer({ rootCauses }) {
   );
 }
 
-function TelemetryPanel({ timeline, latestSensors, safeLimits, selectedSensor, onSelectSensor, currentTimeWindow }) {
-  const futurePoints = timeline?.filter(p => p.is_future) || [];
-  const lastFuturePoint = futurePoints[futurePoints.length - 1] || {};
-  let formattedFutureTime = `+${currentTimeWindow?.futureMinutes || 35} mins`;
-  if (lastFuturePoint.timestamp) {
-    formattedFutureTime = `at ${lastFuturePoint.timestamp.slice(11, 16)}`;
-  }
-
+function TelemetryPanel({ telemetryRows, selectedSensor, onSelectSensor }) {
   const tableData = useMemo(() => {
-    if (!latestSensors || !safeLimits) return [];
+    const rows = Array.isArray(telemetryRows) ? telemetryRows : [];
+    const statusWeight = { EXCEEDED: 3, WARNING: 2, NORMAL: 1 };
 
-    return Object.keys(safeLimits).map(sensor => {
-      const current = toNumber(latestSensors[sensor]);
-      const min = toNumber(safeLimits[sensor]?.min);
-      const max = toNumber(safeLimits[sensor]?.max);
-      const forecast = toNumber(lastFuturePoint.sensors?.[sensor]);
-
-      let status = "good";
-      let statusText = "Normal";
-
-      if (current !== null) {
-        let span = 100;
-        if (min !== null && max !== null) span = max - min;
-        else if (max !== null) span = max;
-        else if (min !== null) span = min;
-
-        if ((min !== null && current < min) || (max !== null && current > max)) {
-          status = "critical";
-          statusText = "Exceeded";
-        } else if (
-          (min !== null && current - min < span * 0.1) ||
-          (max !== null && max - current < span * 0.1)
-        ) {
-          status = "warning";
-          statusText = "Warning";
-        }
-      }
-
-      return {
-        sensorKey: sensor,
-        sensor: sensor.replace(/_/g, " "),
-        current,
-        min,
-        max,
-        forecast,
-        status,
-        statusText
-      };
-    }).sort((a, b) => {
-      const weights = { critical: 3, warning: 2, good: 1 };
-      return weights[b.status] - weights[a.status];
+    return [...rows].sort((a, b) => {
+      const aRoot = a?.is_root_cause ? 1 : 0;
+      const bRoot = b?.is_root_cause ? 1 : 0;
+      if (bRoot !== aRoot) return bRoot - aRoot;
+      return (statusWeight[b?.status] || 0) - (statusWeight[a?.status] || 0);
     });
-  }, [timeline, latestSensors, safeLimits, lastFuturePoint]);
+  }, [telemetryRows]);
 
   return (
     <section className="rounded-xl border border-slate-700 bg-slate-900/70 p-4 flex flex-col h-full">
@@ -292,55 +251,84 @@ function TelemetryPanel({ timeline, latestSensors, safeLimits, selectedSensor, o
               <th className="px-4 py-3 font-medium">Parameter</th>
               <th className="px-4 py-3 font-medium">Status</th>
               <th className="px-4 py-3 font-medium">Current</th>
+              <th className="px-4 py-3 font-medium">Delta Trend</th>
               <th className="px-4 py-3 font-medium">Safe Range</th>
-              <th className="px-4 py-3 font-medium">
-                Prediction
-                <span className="block text-[10px] text-slate-500 font-normal normal-case mt-0.5 tracking-normal">
-                  ({formattedFutureTime})
-                </span>
-              </th>
+              <th className="px-4 py-3 font-medium">Trend</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-700/50">
             {tableData.map((row, idx) => {
-              const isClickable = row.status === "critical" || row.status === "warning";
-              const isSelected = selectedSensor === row.sensorKey;
+              const status = String(row?.status || "NORMAL").toUpperCase();
+              const isRoot = Boolean(row?.is_root_cause);
+              const isClickable = status !== "NORMAL" || isRoot;
+              const isSelected = selectedSensor === row?.sensor;
+              const delta = toNumber(row?.trend_delta) ?? 0;
+              const trendDirection = row?.trend_direction;
+              const trendIcon = trendDirection === "up" ? "\u25B2" : trendDirection === "down" ? "\u25BC" : "\u2014";
+              const trendColor = trendDirection === "up"
+                ? "text-emerald-300"
+                : trendDirection === "down"
+                  ? "text-rose-300"
+                  : "text-slate-300";
+
+              const statusColor = status === "EXCEEDED"
+                ? "text-red-400"
+                : status === "WARNING"
+                  ? "text-amber-300"
+                  : "text-emerald-400";
+
+              const sparklineData = (Array.isArray(row?.sparkline) ? row.sparkline : [])
+                .map((value, pointIndex) => ({ pointIndex, value: toNumber(value) }))
+                .filter((point) => point.value !== null);
 
               const rowClassName = [
                 "transition-colors",
-                isSelected
-                  ? "bg-cyan-900/25 border-l-2 border-l-cyan-400"
-                  : "",
-                isClickable
-                  ? "cursor-pointer hover:bg-slate-800/60"
-                  : "cursor-default",
+                isRoot ? "bg-amber-900/15" : "",
+                isSelected ? "bg-cyan-900/25 border-l-2 border-l-cyan-400" : "",
+                isClickable ? "cursor-pointer hover:bg-slate-800/60" : "cursor-default",
               ].filter(Boolean).join(" ");
 
               return (
                 <tr
-                  key={idx}
+                  key={`${row?.sensor || "sensor"}-${idx}`}
                   className={rowClassName}
-                  onClick={() => { if (isClickable) onSelectSensor(row.sensorKey); }}
+                  onClick={() => { if (isClickable) onSelectSensor(row.sensor); }}
                 >
-                  <td className="px-4 py-3 font-medium text-slate-300 capitalize">{row.sensor.toLowerCase()}</td>
-                  <td className="px-4 py-3">
+                  <td className="px-4 py-3 font-medium text-slate-300">
                     <div className="flex items-center gap-2">
-                      <span className={`h-2.5 w-2.5 rounded-full ${row.status === 'critical' ? 'bg-red-500 animate-pulse' :
-                        row.status === 'warning' ? 'bg-amber-400' : 'bg-emerald-500'
-                        }`}></span>
-                      <span className={`text-xs font-semibold ${row.status === 'critical' ? 'text-red-400' :
-                        row.status === 'warning' ? 'text-amber-300' : 'text-emerald-400'
-                        }`}>{row.statusText}</span>
+                      {isRoot && <Flame size={14} className="text-amber-400" />}
+                      <span className="capitalize">{String(row?.sensor || "").replace(/_/g, " ").toLowerCase()}</span>
                     </div>
                   </td>
+                  <td className="px-4 py-3">
+                    <span className={`text-xs font-semibold ${statusColor}`}>{status}</span>
+                  </td>
                   <td className="px-4 py-3 font-mono text-slate-200">
-                    {row.current !== null ? row.current.toFixed(2) : "--"}
+                    {toNumber(row?.value) !== null ? Number(row.value).toFixed(2) : "--"}
+                  </td>
+                  <td className={`px-4 py-3 font-mono ${trendColor}`}>
+                    {trendIcon} {delta > 0 ? "+" : ""}{delta.toFixed(2)}
                   </td>
                   <td className="px-4 py-3 text-xs text-slate-400">
-                    {row.min !== null ? Number(row.min).toFixed(2) : "0"} <span className="text-slate-600 px-1">~</span> {row.max !== null ? Number(row.max).toFixed(2) : "∞"}
+                    {toNumber(row?.safe_min) !== null ? Number(row.safe_min).toFixed(2) : "0"}
+                    <span className="text-slate-600 px-1">~</span>
+                    {toNumber(row?.safe_max) !== null ? Number(row.safe_max).toFixed(2) : "inf"}
                   </td>
-                  <td className="px-4 py-3 font-mono text-amber-400/90">
-                    {row.forecast !== null ? row.forecast.toFixed(2) : "--"}
+                  <td className="px-4 py-3">
+                    {sparklineData.length ? (
+                      <LineChart width={110} height={30} data={sparklineData}>
+                        <Line
+                          type="monotone"
+                          dataKey="value"
+                          stroke={isRoot ? "#f59e0b" : "#60a5fa"}
+                          strokeWidth={2}
+                          dot={false}
+                          isAnimationActive={false}
+                        />
+                      </LineChart>
+                    ) : (
+                      <span className="text-xs text-slate-500">--</span>
+                    )}
                   </td>
                 </tr>
               );
@@ -462,6 +450,7 @@ function App() {
   const safeLimits = controlRoomData?.safe_limits || {};
   const effectiveLimits = useMemo(() => mergeLimits(safeLimits, limitOverrides), [safeLimits, limitOverrides]);
   const timeline = controlRoomData?.timeline || [];
+  const telemetryRows = Array.isArray(controlRoomData?.telemetry_grid) ? controlRoomData.telemetry_grid : [];
 
   const latestPastPoint = useMemo(() => {
     const past = timeline.filter((point) => !point.is_future);
@@ -522,7 +511,7 @@ function App() {
     if (!timeline.length) {
       return [];
     }
-    // Use risk_score exactly as returned by the backend — no UI mutations.
+    // Use risk_score exactly as returned by the backend â€” no UI mutations.
     return timeline.map((point) => ({
       ...point,
       risk_score: Number((toNumber(point.risk_score) ?? 0).toFixed(4)),
@@ -551,30 +540,20 @@ function App() {
   // --- Telemetry status map for auto-switching logic ---
   const telemetryStatuses = useMemo(() => {
     const statuses = {};
-    const limits = effectiveLimits;
-    Object.keys(limits).forEach((sensor) => {
-      const current = toNumber(latestSensors[sensor]);
-      const min = toNumber(limits[sensor]?.min);
-      const max = toNumber(limits[sensor]?.max);
-      let status = "good";
-      if (current !== null) {
-        let span = 100;
-        if (min !== null && max !== null) span = max - min;
-        else if (max !== null) span = max;
-        else if (min !== null) span = min;
-        if ((min !== null && current < min) || (max !== null && current > max)) {
-          status = "critical";
-        } else if (
-          (min !== null && current - min < span * 0.1) ||
-          (max !== null && max - current < span * 0.1)
-        ) {
-          status = "warning";
-        }
+    telemetryRows.forEach((row) => {
+      const sensor = row?.sensor;
+      if (!sensor) return;
+      const status = String(row?.status || "NORMAL").toUpperCase();
+      if (status === "EXCEEDED") {
+        statuses[sensor] = "critical";
+      } else if (status === "WARNING") {
+        statuses[sensor] = "warning";
+      } else {
+        statuses[sensor] = "good";
       }
-      statuses[sensor] = status;
     });
     return statuses;
-  }, [latestSensors, effectiveLimits]);
+  }, [telemetryRows]);
 
   const firstAbnormalSensor = useMemo(() => {
     const critical = Object.keys(telemetryStatuses).find(s => telemetryStatuses[s] === "critical");
@@ -622,13 +601,9 @@ function App() {
           </div>
           <div className="col-span-12 flex flex-col h-[500px]">
             <TelemetryPanel
-              timeline={displayTimeline}
-              latestSensors={latestSensors}
-              safeLimits={effectiveLimits}
+              telemetryRows={telemetryRows}
               selectedSensor={selectedSensor}
               onSelectSensor={setSelectedSensor}
-              timeWindowOptions={TIME_WINDOW_OPTIONS}
-              currentTimeWindow={selectedOption}
             />
           </div>
 
@@ -643,4 +618,6 @@ function App() {
 }
 
 export default App;
+
+
 
