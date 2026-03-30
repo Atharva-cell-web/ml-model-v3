@@ -680,10 +680,23 @@ def build_control_room_payload(
         except Exception:
             root_causes = []
 
-    root_cause_payload = [
-        {"cause": cause, "impact": float(impact)}
-        for cause, impact in root_causes
-    ]
+    root_cause_payload = []
+    for item in root_causes:
+        if isinstance(item, dict):
+            # It's the new hierarchical SHAP payload
+            root_cause_payload.append(item)
+        else:
+            # Fallback for old tuple style
+            cause, impact = item
+            root_cause_payload.append({
+                "cause": cause,
+                "impact": float(impact),
+                "category": cause,
+                "total_impact": float(impact),
+                "risk_increasing": float(impact) if impact > 0 else 0.0,
+                "risk_decreasing": float(impact) if impact < 0 else 0.0,
+                "top_parameters": []
+            })
     telemetry_grid = _build_telemetry_grid(machine_df, current_safe_limits, root_cause_payload)
 
     if breached_sensors:

@@ -264,6 +264,7 @@ function SystemHealthMonitor({ timeline, riskScore }) {
 
 function RootCauseAnalyzer({ rootCauses }) {
   const topCauses = useMemo(() => (Array.isArray(rootCauses) ? rootCauses.slice(0, 3) : []), [rootCauses]);
+  const [expandedIndex, setExpandedIndex] = useState(null);
 
   return (
     <section className="rounded-xl border border-slate-700 bg-slate-900/70 p-4">
@@ -281,21 +282,44 @@ function RootCauseAnalyzer({ rootCauses }) {
         <div className="space-y-3">
           {topCauses.map((entry, index) => {
             const impact = toNumber(entry?.impact);
+            const isExpanded = expandedIndex === index;
+            const hasParams = entry?.top_parameters && entry.top_parameters.length > 0;
             return (
               <div
                 key={`${entry?.cause || "cause"}-${index}`}
-                className="rounded-lg border border-amber-900/50 bg-amber-900/10 px-4 py-3"
+                className={`rounded-lg border px-4 py-3 transition-colors ${hasParams ? "cursor-pointer hover:bg-amber-900/20" : ""} ${isExpanded ? "border-amber-700 bg-amber-900/20" : "border-amber-900/50 bg-amber-900/10"}`}
+                onClick={() => hasParams && setExpandedIndex(isExpanded ? null : index)}
               >
                 <div className="flex items-center justify-between gap-3">
-                  <p className="text-sm font-medium text-amber-200">
-                    {index + 1}. {entry?.cause || "Unknown Cause"}
-                  </p>
+                  <div className="flex items-center gap-2">
+                    <p className="text-sm font-medium text-amber-200">
+                      {index + 1}. {entry?.cause || "Unknown Cause"}
+                    </p>
+                    {hasParams && (
+                       <span className="text-xs text-amber-500 bg-amber-950/50 px-2 py-0.5 rounded border border-amber-800/50">
+                         {isExpanded ? "Collapse" : "Expand"}
+                       </span>
+                    )}
+                  </div>
                   {impact !== null && (
                     <span className="rounded border border-amber-700/60 bg-slate-950/40 px-2 py-1 text-xs font-semibold text-amber-300">
-                      Impact {impact.toFixed(3)}
+                      Total Impact {impact.toFixed(3)}
                     </span>
                   )}
                 </div>
+                {isExpanded && hasParams && (
+                   <div className="mt-3 pt-3 border-t border-amber-900/50 pl-2 space-y-2">
+                     <p className="text-xs font-semibold text-amber-400/70 uppercase tracking-widest mb-1">Specific Drivers</p>
+                     {entry.top_parameters.map((p, pIdx) => (
+                       <div key={pIdx} className="flex justify-between items-center text-xs">
+                         <span className="text-slate-300 font-mono tracking-tight">{String(p.parameter).replace(/_/g, " ").toLowerCase()}</span>
+                         <span className={`font-mono ${p.impact > 0 ? "text-red-400" : "text-emerald-400"}`}>
+                           {p.impact > 0 ? "+" : ""}{(p.impact).toFixed(4)}
+                         </span>
+                       </div>
+                     ))}
+                   </div>
+                )}
               </div>
             );
           })}
@@ -572,6 +596,9 @@ function App() {
         .map((entry) => ({
           cause: typeof entry?.cause === "string" ? entry.cause : null,
           impact: toNumber(entry?.impact),
+          risk_increasing: toNumber(entry?.risk_increasing),
+          risk_decreasing: toNumber(entry?.risk_decreasing),
+          top_parameters: Array.isArray(entry?.top_parameters) ? entry.top_parameters : [],
         }))
         .filter((entry) => Boolean(entry.cause))
         .slice(0, 3);
@@ -581,7 +608,7 @@ function App() {
     if (Array.isArray(fallback)) {
       return fallback
         .filter((item) => typeof item === "string")
-        .map((cause) => ({ cause, impact: null }))
+        .map((cause) => ({ cause, impact: null, top_parameters: [] }))
         .slice(0, 3);
     }
 
