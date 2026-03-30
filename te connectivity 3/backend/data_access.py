@@ -72,6 +72,7 @@ FEB_RESULTS_FILE = PROJECT_ROOT / "new_processed_data" / "FEB_TEST_RESULTS.parqu
 MACHINE_TESTS_DIR = PROJECT_ROOT / "new_processed_data"
 CONTROL_MODEL_PATH = PROJECT_ROOT / "models/scrap_risk_model_v4.pkl"
 MODEL_FEATURES_PATH = PROJECT_ROOT / "models" / "model_features_v4.pkl"
+MODEL_FEATURES_FALLBACK_PATH = PROJECT_ROOT / "new_processed_data" / "model_features_v4.pkl"
 FORECASTER_MODEL_PATH = PROJECT_ROOT / "models" / "sensor_forecaster_lagged.pkl"
 FUTURE_RISK_THRESHOLD = float(ML_THRESHOLDS.get("MEDIUM", 0.60))
 CONTROL_ROOM_PAST_WINDOW_MINUTES = 60
@@ -242,19 +243,28 @@ def _clean_limit_payload(current_safe_limits: dict):
 
 @lru_cache(maxsize=1)
 def _load_control_model_and_features():
-    if not CONTROL_MODEL_PATH.exists():
-        raise FileNotFoundError(f"Model not found at: {CONTROL_MODEL_PATH}")
+    model = None
+    features = []
 
-    model = joblib.load(CONTROL_MODEL_PATH)
-    
-    if hasattr(model, "feature_name"):
+    if CONTROL_MODEL_PATH.exists():
+        model = joblib.load(CONTROL_MODEL_PATH)
+
+    if model is not None and hasattr(model, "feature_name"):
         features = model.feature_name() if callable(model.feature_name) else model.feature_name
-    elif hasattr(model, "feature_name_"):
+    elif model is not None and hasattr(model, "feature_name_"):
         features = model.feature_name_
-    elif hasattr(model, "booster_"):
+    elif model is not None and hasattr(model, "booster_"):
         features = model.booster_.feature_name()
-    else:
+    elif MODEL_FEATURES_PATH.exists():
         features = joblib.load(MODEL_FEATURES_PATH)
+    elif MODEL_FEATURES_FALLBACK_PATH.exists():
+        features = joblib.load(MODEL_FEATURES_FALLBACK_PATH)
+    elif v4_features:
+        features = list(v4_features)
+
+    if model is None:
+        print(f"[control-model] Warning: model not found at {CONTROL_MODEL_PATH}. Using fallback features only.")
+
     return model, tuple(features)
 
 @lru_cache(maxsize=1)

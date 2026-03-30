@@ -2,6 +2,8 @@ import pandas as pd
 import numpy as np
 from pathlib import Path
 
+from backend.config_limits import SAFE_LIMITS
+
 # Load the physics rules from the CSV
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 INFO_FILE = PROJECT_ROOT / "processed" / "safe" / "AI_cup_parameter_info_cleaned.csv"
@@ -47,6 +49,23 @@ def calculate_dynamic_limits(recent_history: pd.DataFrame) -> dict:
     """
     dynamic_limits = {}
     if recent_history is None or recent_history.empty:
+        return dynamic_limits
+
+    # Fallback: if the physics CSV is unavailable, use configured hard limits
+    # so telemetry and limit-based UI sections keep working.
+    if not PHYSICS_RULES:
+        for sensor, limits in SAFE_LIMITS.items():
+            if sensor not in recent_history.columns:
+                continue
+            try:
+                min_limit = float(limits["min"]) if "min" in limits and pd.notna(limits["min"]) else 0.0
+                max_limit = float(limits["max"]) if "max" in limits and pd.notna(limits["max"]) else min_limit
+            except Exception:
+                continue
+            dynamic_limits[sensor] = {
+                "min": min_limit,
+                "max": max_limit,
+            }
         return dynamic_limits
 
     # ── Local context from the past_window ONLY ──
