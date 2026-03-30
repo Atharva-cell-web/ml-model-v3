@@ -74,6 +74,9 @@ CONTROL_MODEL_PATH = PROJECT_ROOT / "models/scrap_risk_model_v4.pkl"
 MODEL_FEATURES_PATH = PROJECT_ROOT / "models" / "model_features_v4.pkl"
 FORECASTER_MODEL_PATH = PROJECT_ROOT / "models" / "sensor_forecaster_lagged.pkl"
 FUTURE_RISK_THRESHOLD = float(ML_THRESHOLDS.get("MEDIUM", 0.60))
+CONTROL_ROOM_PAST_WINDOW_MINUTES = 60
+CONTROL_ROOM_FUTURE_WINDOW_MINUTES = 30
+FUTURE_HORIZON_STEPS_MINUTES = (5, 10, 15, 20, 25, 30)
 
 _ttl_cache: dict = {}
 _TTL_SECONDS = 15
@@ -352,7 +355,7 @@ def _build_machine_feb_history(machine_norm: str):
     history["is_scrap_actual"] = pd.to_numeric(history["is_scrap_actual"], errors="coerce").fillna(0)
 
     # Rows that didn't match FEB results have NaN scrap_probability.
-    # Fill with 0.0 — do NOT re-score with the model at runtime, as the
+    # Fill with 0.0 - do NOT re-score with the model at runtime, as the
     # model expects rolling-feature inputs, not raw sensor columns.
     history["scrap_probability"] = history["scrap_probability"].fillna(0.0)
 
@@ -517,7 +520,7 @@ def _infer_step_seconds(history: pd.DataFrame) -> int:
         return 60
     return int(np.clip(round(median_step), 10, 120))
 
-def _generate_future_horizon(machine_df, n_steps=35):
+def _generate_future_horizon(machine_df, n_steps=CONTROL_ROOM_FUTURE_WINDOW_MINUTES):
     if machine_df is None or machine_df.empty:
         return []
 
@@ -531,8 +534,15 @@ def _generate_future_horizon(machine_df, n_steps=35):
     except Exception:
         future_preds = {}
 
-    last_ts = pd.to_datetime(last_row["timestamp"])
-    horizons = [5, 10, 15, 20, 25, 30]
+    last_ts = pd.to_datetime(last_row["timestamp"], errors="coerce")
+    if pd.isna(last_ts):
+        return []
+    if hasattr(last_ts, "tz") and last_ts.tz is not None:
+        last_ts = last_ts.tz_localize(None)
+    horizons = list(FUTURE_HORIZON_STEPS_MINUTES)
+
+    # Convert last_ts to epoch milliseconds for consistent timeline
+    last_ts_ms = int(last_ts.timestamp() * 1000)
 
     future_points = []
     for h in horizons:
@@ -541,9 +551,11 @@ def _generate_future_horizon(machine_df, n_steps=35):
         risk = round(max(0.0, min(1.0, risk)), 4)
 
         future_points.append({
-            "timestamp": (last_ts + pd.Timedelta(minutes=h)).isoformat(),
+            "timestamp": last_ts_ms + h * 60 * 1000,
             "risk_score": risk,
             "is_future": True,
+            "type": "future",
+            "horizon_minutes": h,
             "is_scrap_actual": 0,
             "sensors": {},
         })
@@ -556,7 +568,7 @@ def _row_to_timeline_point(row, is_future: bool, current_safe_limits: dict = Non
     for sensor in sensor_keys:
         if sensor in row and pd.notna(row[sensor]):
             val = float(row[sensor])
-            # Skip garbage values — all legitimate sensors are below ~1500
+            # Skip garbage values - all legitimate sensors are below ~1500
             if not np.isfinite(val) or abs(val) > 5000:
                 continue
             sensors[sensor] = round(val, 2)
@@ -564,7 +576,9 @@ def _row_to_timeline_point(row, is_future: bool, current_safe_limits: dict = Non
     ts = pd.to_datetime(row["timestamp"])
     if hasattr(ts, "tz") and ts.tz is not None:
         ts = ts.tz_localize(None)
-    
+    # Convert to epoch milliseconds for correct chart time scaling
+    timestamp_ms = int(ts.timestamp() * 1000)
+
     sensor_input = {}
     for f in v4_features:
         val = row.get(f)
@@ -587,18 +601,25 @@ def _row_to_timeline_point(row, is_future: bool, current_safe_limits: dict = Non
     machine_norm = str(row.get("machine_id_normalized", "")).upper()
     if "231" in machine_norm:
         future_risk = min(future_risk, 0.15)
-    
+
     return {
-        "timestamp": ts.strftime("%Y-%m-%d %H:%M:%S"),
+        "timestamp": timestamp_ms,
         "risk_score": risk_score,
         "future_risk_score": future_risk,
         "is_future": bool(is_future),
+        "type": "future" if is_future else "past",
         "is_scrap_actual": int(float(row.get("is_scrap_actual", 0) or 0)),
         "sensors": sensors,
     }
 
-def build_control_room_payload(machine_id: str, time_window: int = 240, future_window: int = 35):
-    payload_key = ("payload", machine_id, time_window, future_window)
+def build_control_room_payload(
+    machine_id: str,
+    time_window: int = CONTROL_ROOM_PAST_WINDOW_MINUTES,
+    future_window: int = CONTROL_ROOM_FUTURE_WINDOW_MINUTES,
+):
+    effective_time_window = CONTROL_ROOM_PAST_WINDOW_MINUTES
+    effective_future_window = CONTROL_ROOM_FUTURE_WINDOW_MINUTES
+    payload_key = ("payload", machine_id, effective_time_window, effective_future_window)
     cached_payload = _get_cached(payload_key)
     if cached_payload is not None:
         return cached_payload
@@ -615,8 +636,8 @@ def build_control_room_payload(machine_id: str, time_window: int = 240, future_w
     history["timestamp"] = pd.to_datetime(history["timestamp"], errors="coerce")
 
     max_time = history["timestamp"].max()
-    anchor = max_time - pd.Timedelta(hours=1)
-    cutoff = anchor - pd.Timedelta(minutes=time_window)
+    anchor = max_time
+    cutoff = anchor - pd.Timedelta(minutes=effective_time_window)
 
     past_window = history[
         (history["timestamp"] >= cutoff) & (history["timestamp"] <= anchor)
@@ -676,7 +697,7 @@ def build_control_room_payload(machine_id: str, time_window: int = 240, future_w
     else:
         status = "NORMAL"
 
-    future_minutes = max(5, min(60, future_window))
+    future_minutes = effective_future_window
     future_horizon = _generate_future_horizon(past_window, n_steps=future_minutes)
 
     past_scrap_detected = int((past_window["is_scrap_actual"].fillna(0) >= 1).sum())
@@ -691,42 +712,29 @@ def build_control_room_payload(machine_id: str, time_window: int = 240, future_w
     for _, row in past_timeline.iterrows():
         timeline.append(_row_to_timeline_point(row, is_future=False, current_safe_limits=current_safe_limits))
 
-    # ── Append live-streamed sensor data (if available) ──────────
-    try:
-        from backend.live_predictor import live_buffer
-        # Try both raw machine_id and normalised form
-        live_sensors = live_buffer.get(machine_id) or live_buffer.get(machine_norm) or live_buffer.get(_display_machine_id(machine_norm))
-        if live_sensors:
-            from datetime import datetime as _dt
-            model, model_features = _load_control_model_and_features()
-            live_row = {f: 0.0 for f in model_features}
-            for sensor_name, sensor_val in live_sensors.items():
-                if sensor_name in live_row:
-                    live_row[sensor_name] = float(sensor_val)
-            X_live = pd.DataFrame([live_row])[list(model_features)].fillna(0.0)
-            if hasattr(model, "predict_proba"):
-                live_risk = float(model.predict_proba(X_live)[:, 1][0])
-            else:
-                live_risk = float(model.predict(X_live)[0])
-
-            live_sensor_dict = {}
-            for sensor in current_safe_limits:
-                if sensor in live_sensors:
-                    live_sensor_dict[sensor] = round(float(live_sensors[sensor]), 2)
-
-            timeline.append({
-                "timestamp": _dt.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "risk_score": round(min(1.0, max(0.0, live_risk)), 2),
-                "is_future": False,
-                "is_scrap_actual": 0,
-                "sensors": live_sensor_dict,
-            })
-    except ImportError:
-        pass  # live_predictor not loaded yet — skip gracefully
+    # Timeline continuity: future timestamps are already epoch ms from _generate_future_horizon.
+    # Add a bridge point so the past line and future line connect at the boundary.
+    if timeline and future_timeline:
+        last_past_point = timeline[-1]
+        last_past_ts_ms = last_past_point["timestamp"]
+        last_past_risk = last_past_point.get("risk_score", 0.0)
+        first_future_risk = future_timeline[0].get("risk_score", 0.0)
+        # Bridge point: carries both pastRisk and futureRisk so lines connect
+        bridge_point = {
+            "timestamp": last_past_ts_ms,
+            "risk_score": last_past_risk,
+            "is_future": False,
+            "type": "bridge",
+            "is_scrap_actual": 0,
+            "sensors": {},
+            "bridge_future_risk": first_future_risk,
+        }
+        # Replace last past point with bridge so we don't duplicate
+        timeline[-1] = bridge_point
 
     timeline.extend(future_timeline)
 
-    # ── Final sanitization: strip any garbage sensor values ────────
+    # Final sanitization: strip any garbage sensor values
     for point in timeline:
         bad_keys = [k for k, v in point.get("sensors", {}).items()
                     if not isinstance(v, (int, float)) or not np.isfinite(v) or abs(v) > 5000]
@@ -767,7 +775,7 @@ def get_recent_window(machine_id, minutes=60):
         return pd.DataFrame()
 
     max_time = history["timestamp"].max()
-    anchor = max_time - pd.Timedelta(hours=1)
+    anchor = max_time
     
     cutoff = anchor - pd.Timedelta(minutes=minutes)
 

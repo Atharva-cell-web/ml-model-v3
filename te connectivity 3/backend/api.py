@@ -30,8 +30,8 @@ def get_machine_status(machine_id: str):
 @app.get("/api/control-room/{machine_id}")
 def get_control_room_data(
     machine_id: str,
-    time_window: int = Query(default=240, ge=30, le=1440),
-    future_window: int = Query(default=35, ge=5, le=60),
+    time_window: int = Query(default=60, ge=30, le=1440),
+    future_window: int = Query(default=30, ge=5, le=60),
 ):
     try:
         print(f"[REQUEST] Machine: {machine_id} | Time: {datetime.now().strftime('%H:%M:%S')} | Future: {future_window}m", flush=True)

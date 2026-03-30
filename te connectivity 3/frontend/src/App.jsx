@@ -12,6 +12,12 @@ import {
   YAxis,
 } from "recharts";
 import { Activity, AlertTriangle, CheckCircle2, Flame } from "lucide-react";
+import dayjs from "dayjs";
+import utc from "dayjs/plugin/utc";
+import timezone from "dayjs/plugin/timezone";
+
+dayjs.extend(utc);
+dayjs.extend(timezone);
 
 const API_BASE = "http://127.0.0.1:8000";
 const FUTURE_RISK_THRESHOLD = 0.6;
@@ -25,8 +31,7 @@ const MACHINE_OPTIONS = [
 ];
 
 const TIME_WINDOW_OPTIONS = [
-  { value: 120, futureMinutes: 35, label: "2H Past / 35M Future" },
-  { value: 60, futureMinutes: 20, label: "1H Past / 20M Future" },
+  { value: 60, futureMinutes: 30, label: "1H Past / 30M Future" },
 ];
 
 const toNumber = (value) => {
@@ -46,10 +51,22 @@ const mergeLimits = (safeLimits, overrides) => {
 };
 
 const formatClock = (timestamp) => {
-  if (!timestamp || typeof timestamp !== "string") {
-    return "";
+  if (timestamp === null || timestamp === undefined) return "";
+  if (typeof timestamp === "number" && Number.isFinite(timestamp)) {
+    const dt = new Date(timestamp);
+    return Number.isNaN(dt.getTime()) ? "" : dt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
   }
-  return timestamp.slice(11, 16);
+  if (typeof timestamp === "string") {
+    if (timestamp.length >= 16 && timestamp.includes(" ")) {
+      return timestamp.slice(11, 16);
+    }
+    const parsed = Date.parse(timestamp);
+    if (Number.isFinite(parsed)) {
+      const dt = new Date(parsed);
+      return dt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
+    }
+  }
+  return "";
 };
 
 const fetchWithRetry = async (url, options = {}, retries = 3, delay = 1000) => {
@@ -125,22 +142,61 @@ function GlobalHeader({
 function SystemHealthMonitor({ timeline, riskScore }) {
   const chartData = useMemo(
     () =>
-      (timeline || []).map((point) => {
-        const risk = toNumber(point.risk_score) ?? 0;
-        const alertDot = point.is_scrap_actual === 1 || (point.is_future && risk > FUTURE_RISK_THRESHOLD);
-        return {
-          time: point.timestamp,
-          pastRisk: point.is_future ? null : risk,
-          futureRisk: point.is_future ? risk : null,
-          alertDot,
-        };
-      }),
+      (timeline || [])
+        .map((point) => {
+          const risk = toNumber(point.risk_score) ?? 0;
+          const isFuture = point.type === "future" || point.is_future;
+          const isBridge = point.type === "bridge";
+
+          // Timestamps are now epoch milliseconds (numbers) from the backend
+          let time = null;
+          if (typeof point.timestamp === "number" && Number.isFinite(point.timestamp)) {
+            time = point.timestamp;
+          } else if (typeof point.timestamp === "string") {
+            const rawTs = point.timestamp.replace(" ", "T");
+            time = Date.parse(rawTs);
+          }
+          if (!Number.isFinite(time)) return null;
+
+          // Bridge point: connects the past line to the future line
+          if (isBridge) {
+            return {
+              time,
+              pastRisk: risk,
+              futureRisk: toNumber(point.bridge_future_risk) ?? risk,
+              isFuture: false,
+              isBridge: true,
+            };
+          }
+
+          return {
+            time,
+            pastRisk: isFuture ? null : risk,
+            futureRisk: isFuture ? risk : null,
+            isFuture,
+            isBridge: false,
+          };
+        })
+        .filter(Boolean)
+        .sort((a, b) => a.time - b.time),
     [timeline],
   );
+
+  const predictionStartTime = useMemo(() => {
+    const bridge = chartData.find((point) => point.isBridge);
+    if (bridge) return bridge.time;
+    const firstFuture = chartData.find((point) => point.isFuture);
+    return firstFuture ? firstFuture.time : null;
+  }, [chartData]);
 
   if (!chartData.length) {
     return <div className="flex h-64 items-center justify-center text-sm text-slate-400">No timeline data available.</div>;
   }
+
+  const tooltipLabelFormatter = (value) => {
+    if (value === null || value === undefined) return "";
+    return dayjs(value).tz("Asia/Kolkata").format("MMM DD YYYY HH:mm:ss");
+  };
 
   return (
     <section className="rounded-xl border border-slate-700 bg-slate-900/70 p-4">
@@ -155,25 +211,50 @@ function SystemHealthMonitor({ timeline, riskScore }) {
         <ResponsiveContainer width="100%" height="100%">
           <LineChart data={chartData}>
             <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
-            <XAxis dataKey="time" tickFormatter={formatClock} tick={{ fill: "#94a3b8", fontSize: 11 }} interval="preserveStartEnd" label={{ value: 'Time', position: 'insideBottomRight', offset: -5, fill: '#94a3b8', fontSize: 12 }} />
+            <XAxis
+              dataKey="time"
+              type="number"
+              scale="time"
+              domain={["dataMin", "dataMax"]}
+              tickFormatter={(t) => dayjs(t).tz("Asia/Kolkata").format("HH:mm")}
+              tick={{ fill: "#94a3b8", fontSize: 11 }}
+              label={{ value: "Time", position: "insideBottomRight", offset: -5, fill: "#94a3b8", fontSize: 12 }}
+            />
             <YAxis domain={[0, 1]} tick={{ fill: "#94a3b8", fontSize: 11 }} label={{ value: 'Risk Probability', angle: -90, position: 'insideLeft', fill: '#94a3b8', fontSize: 12 }} />
             <Tooltip
               contentStyle={{ backgroundColor: "#0f172a", border: "1px solid #334155", color: "#e2e8f0" }}
-              formatter={(value) => (toNumber(value) ?? 0).toFixed(3)}
-              labelFormatter={(value) => value}
+              formatter={(value, name) => [(toNumber(value) ?? 0).toFixed(4), name]}
+              labelFormatter={tooltipLabelFormatter}
             />
             <Legend verticalAlign="top" height={36} iconType="line" />
-            <Line type="monotone" dataKey="pastRisk" name="Past (Actual)" stroke="#00E5FF" strokeWidth={2} dot={false} />
+            <Line
+              type="monotone"
+              dataKey="pastRisk"
+              name="Past (Actual)"
+              stroke="#00E5FF"
+              strokeWidth={2}
+              dot={false}
+              connectNulls={false}
+            />
             <Line
               type="monotone"
               dataKey="futureRisk"
               name="Future (Predicted)"
-              stroke="#FFA500"
-              strokeWidth={2}
+              stroke="#ff9800"
+              strokeWidth={3}
               strokeDasharray="5 5"
               dot={{ r: 4 }}
+              activeDot={{ r: 6 }}
+              connectNulls={false}
             />
-            <ReferenceLine y={FUTURE_RISK_THRESHOLD} stroke="#ef4444" strokeDasharray="5 5" />
+            {predictionStartTime && (
+              <ReferenceLine
+                x={predictionStartTime}
+                stroke="#94a3b8"
+                strokeDasharray="4 4"
+                label={{ value: "Prediction Starts", fill: "#94a3b8", fontSize: 10, position: "top" }}
+              />
+            )}
           </LineChart>
         </ResponsiveContainer>
       </div>
@@ -376,7 +457,7 @@ function PredictionSummary({ summaryStats, timeline }) {
           <div className="p-4 rounded-lg border border-slate-700/50 bg-slate-800/50">
             <p className="text-xs text-slate-400 mb-1 font-medium">Total Past Scrap</p>
             <p className="text-2xl font-bold text-slate-100">{stats.pastScrapCount} <span className="text-sm font-normal text-slate-500">units</span></p>
-            <p className="text-xs text-slate-500 mt-1">Last 4 hours</p>
+            <p className="text-xs text-slate-500 mt-1">Last 60 min</p>
           </div>
           <div className="p-4 rounded-lg border border-cyan-900/50 bg-cyan-900/10">
             <p className="text-xs text-cyan-400/70 mb-1 font-medium">Average Past Risk</p>
@@ -396,7 +477,7 @@ function PredictionSummary({ summaryStats, timeline }) {
           <div className="p-4 rounded-lg border border-amber-900/50 bg-amber-900/10">
             <p className="text-xs text-amber-400/70 mb-1 font-medium">Predicted Scrap</p>
             <p className="text-2xl font-bold text-amber-400">{stats.futureScrapCount} <span className="text-sm font-normal text-amber-700/50">units</span></p>
-            <p className="text-xs text-amber-500/50 mt-1">Next 60 min</p>
+            <p className="text-xs text-amber-500/50 mt-1">Next 30 min</p>
           </div>
           <div className={`p-4 rounded-lg border ${stats.trendBorder}`}>
             <p className="text-xs text-slate-400 mb-1 font-medium">Trend Comparison</p>
@@ -411,7 +492,7 @@ function PredictionSummary({ summaryStats, timeline }) {
 
 function App() {
   const [machineId, setMachineId] = useState("M-231");
-  const [timeWindowMinutes, setTimeWindowMinutes] = useState(120);
+  const [timeWindowMinutes, setTimeWindowMinutes] = useState(60);
   const [controlRoomData, setControlRoomData] = useState(null);
   const [limitOverrides, setLimitOverrides] = useState({});
   const [loading, setLoading] = useState(true);
@@ -618,6 +699,3 @@ function App() {
 }
 
 export default App;
-
-
-
