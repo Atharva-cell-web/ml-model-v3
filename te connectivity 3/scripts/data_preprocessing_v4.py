@@ -1,4 +1,4 @@
-﻿import argparse
+import argparse
 import json
 import logging
 import pickle
@@ -7,6 +7,13 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from ml_pipeline.column_standardizer import standardize_columns
+from ml_pipeline.data_loader import load_raw_data
+from ml_pipeline.schema_utils import detect_format, pivot_long_to_wide, sanitize_rows, validate_schema
 
 # Setup simple logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -33,20 +40,36 @@ class ManufacturingPreprocessor:
         self.logs.append(log_entry)
         logging.info(f"Step '{step_name}': {details}")
 
-    def load_data(self, parquet_path):
+    def load_data(self, input_path):
         """Step 1 - Raw Data Loading"""
-        logging.info(f"Loading data from {parquet_path}")
-        df = pd.read_parquet(parquet_path)
+        logging.info(f"Loading raw input file: {input_path}")
+        df = load_raw_data(input_path)
+        logging.info(f"Loaded file: {input_path}. Raw shape: {df.shape}")
 
-        # Ensure timestamps are parsed correctly
-        df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
+        # Standardize column names and detect source layout.
+        df = standardize_columns(df)
+        fmt = detect_format(df)
+        logging.info(f"Detected format: {fmt}")
 
-        # Sort data by machine_id and timestamp
+        # Convert long-format telemetry into v4-compatible wide rows.
+        if fmt == "long":
+            df = pivot_long_to_wide(df)
+            logging.info(f"Data shape after pivot: {df.shape}")
+
+        # Standardize again because pivoted sensor names can include spaces/symbols.
+        df = standardize_columns(df)
+
+        # Ingestion safety checks: drop invalid timestamps and duplicate keys.
+        df = sanitize_rows(df)
+
+        schema_report = validate_schema(df)
+
+        # Keep v4 ordering assumptions unchanged downstream.
         df = df.sort_values(by=["machine_id", "timestamp"]).reset_index(drop=True)
 
         self._log_step(
             "Raw Data Loading",
-            f"Loaded {len(df)} rows from {parquet_path}. Sorted by machine_id and timestamp.",
+            f"Loaded {len(df)} rows from {input_path}. Detected format '{fmt}'. Missing recommended sensors: {schema_report['missing_recommended']}. Sorted by machine_id and timestamp.",
         )
         return df
 
@@ -228,9 +251,9 @@ class ManufacturingPreprocessor:
 
         logging.info(f"Pipeline execution complete! Outputs saved to {output_dir}")
 
-    def run_pipeline(self, parquet_path, output_dir="."):
+    def run_pipeline(self, input_path, output_dir="."):
         """Run all steps sequentially"""
-        df = self.load_data(parquet_path)
+        df = self.load_data(input_path)
         df = self.clean_data(df)
         df = self.encode_machine_id(df)
         df = self.filter_sensors(df)
@@ -248,7 +271,7 @@ if __name__ == "__main__":
         "--input",
         type=str,
         default="D:/teit04/te connectivity 3/new_processed_data/FINAL_TRAINING_MASTER_V3.parquet",
-        help="Path to raw parquet file",
+        help="Path to raw input file (.csv/.parquet/.xlsx)",
     )
     parser.add_argument(
         "--outdir",

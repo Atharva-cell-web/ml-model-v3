@@ -1,4 +1,4 @@
-﻿import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import axios from "axios";
 import {
   CartesianGrid,
@@ -459,7 +459,7 @@ function App() {
 
   const isSensorFrozen = useMemo(() => {
     if (!latestPastPoint || !timeline.length) return false;
-    
+
     // 1. Current risk must be > 0.8
     const risk = toNumber(controlRoomData?.current_health?.risk_score) ?? 0;
     if (risk <= 0.8) return false;
