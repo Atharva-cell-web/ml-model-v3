@@ -1,6 +1,7 @@
 import pandas as pd
 import numpy as np
 from pathlib import Path
+from pandas.errors import EmptyDataError, ParserError
 
 from backend.config_limits import SAFE_LIMITS
 
@@ -15,7 +16,24 @@ def load_physics_rules():
         print(f"Warning: Physics file not found at {INFO_FILE}. Using empty ruleset.")
         return {}
 
-    df = pd.read_csv(INFO_FILE)
+    try:
+        df = pd.read_csv(INFO_FILE)
+    except (EmptyDataError, ParserError) as exc:
+        print(f"Warning: Physics file at {INFO_FILE} could not be parsed ({exc}). Using empty ruleset.")
+        return {}
+
+    if df.empty:
+        print(f"Warning: Physics file at {INFO_FILE} is empty. Using empty ruleset.")
+        return {}
+
+    required_columns = {"variable_name", "tolerance_plus", "tolerance_minus"}
+    if not required_columns.issubset(df.columns):
+        print(
+            f"Warning: Physics file at {INFO_FILE} is missing required columns "
+            f"{sorted(required_columns - set(df.columns))}. Using empty ruleset."
+        )
+        return {}
+
     rules = {}
     for _, row in df.iterrows():
         sensor = str(row['variable_name']).strip()
