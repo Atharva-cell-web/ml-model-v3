@@ -107,4 +107,4 @@ def compute_root_causes(model, feature_row, feature_names):
 
     # Sort categories by absolute total impact
     result.sort(key=lambda item: abs(item["total_impact"]), reverse=True)
-    return result[:3]
+    return result[:5]

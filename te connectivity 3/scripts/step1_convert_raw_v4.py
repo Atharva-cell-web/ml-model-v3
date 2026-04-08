@@ -8,7 +8,7 @@ def get_machine_id(filename):
     """Extract machine ID from filename (e.g., M231Jan.csv -> M231)."""
     return Path(filename).stem.split("-")[0].replace("Jan", "").replace("Feb", "").upper()
 
-def process_hydra(raw_dir, out_dir, cutoff_date=None):
+def process_hydra(raw_dir, out_dir, cutoff_date=None, prefix=""):
     """Convert raw Hydra Excel files into HYDRA_TRAIN.parquet."""
     print(f"\n{'='*60}\nSTEP 1A — Processing Hydra Quality Data\n{'='*60}")
     
@@ -32,11 +32,12 @@ def process_hydra(raw_dir, out_dir, cutoff_date=None):
     else:
         train_df = df
         
-    out_path = Path(out_dir) / "HYDRA_TRAIN.parquet"
+    prefix_str = (prefix + "_") if prefix else ""
+    out_path = Path(out_dir) / f"{prefix_str}HYDRA_TRAIN.parquet"
     train_df.to_parquet(out_path, index=False)
     print(f"✅ HYDRA_TRAIN saved: {len(train_df):,} rows")
 
-def process_sensor_files(raw_dir, out_dir, cutoff_date=None):
+def process_sensor_files(raw_dir, out_dir, cutoff_date=None, prefix=""):
     """Convert raw Machine CSV files into [MACHINE]_TRAIN.parquet."""
     print(f"\n{'='*60}\nSTEP 1B — Processing Machine Sensor Data\n{'='*60}")
     
@@ -61,7 +62,8 @@ def process_sensor_files(raw_dir, out_dir, cutoff_date=None):
             if cutoff_date:
                 df = df[df["timestamp"] <= cutoff_date]
         
-        out_path = Path(out_dir) / f"{machine_id}_TRAIN.parquet"
+        prefix_str = (prefix + "_") if prefix else ""
+        out_path = Path(out_dir) / f"{prefix_str}{machine_id}_TRAIN.parquet"
         df.to_parquet(out_path, index=False)
         print(f"✅ {machine_id}_TRAIN saved: {len(df):,} rows")
         
@@ -76,6 +78,8 @@ def main():
                         help="Folder to save the converted .parquet files")
     parser.add_argument("--cutoff-date", type=str, default=None,
                         help="Optional split date (e.g. '2026-01-11'). Data after this is ignored.")
+    parser.add_argument("--prefix", type=str, default="",
+                        help="Prefix for output files (e.g. OLD, NEW)")
     
     args = parser.parse_args()
     
@@ -92,8 +96,8 @@ def main():
         print(f"Please create the folder, put the CSV/Excel files inside, and run again.")
         return
 
-    process_hydra(args.raw_dir, args.outdir, cutoff)
-    process_sensor_files(args.raw_dir, args.outdir, cutoff)
+    process_hydra(args.raw_dir, args.outdir, cutoff, args.prefix)
+    process_sensor_files(args.raw_dir, args.outdir, cutoff, args.prefix)
     
     print("\n🎉 DONE! Step 1 Complete.")
     print("Next step: Run the `step2_merge_master_v4.py` script to align scrap events!")

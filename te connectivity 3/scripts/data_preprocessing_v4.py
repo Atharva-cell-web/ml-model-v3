@@ -25,8 +25,8 @@ class ManufacturingPreprocessor:
     Can be used for training, validation, or inference.
     """
 
-    def __init__(self, cycle_look_ahead=10):
-        self.cycle_look_ahead = cycle_look_ahead
+    def __init__(self, lookahead_minutes=5):
+        self.lookahead_minutes = lookahead_minutes
         self.logs = []
         self.dead_sensors_removed = []
         self.high_missing_sensors_removed = []
@@ -131,7 +131,7 @@ class ManufacturingPreprocessor:
 
     def engineer_features(self, df):
         """Step 5 - Feature Engineering"""
-        exclude_cols = ["machine_id", "timestamp", "is_scrap", "future_scrap"]
+        exclude_cols = ["machine_id", "timestamp", "is_scrap", "future_scrap", "scrap_weight", "scrap_quantity"]
         numeric_cols = [c for c in df.columns if c not in exclude_cols and pd.api.types.is_numeric_dtype(df[c])]
 
         logging.info("Engineering features... this may take some time.")
@@ -189,14 +189,23 @@ class ManufacturingPreprocessor:
             self._log_step("Target Label Creation", "No 'is_scrap' column found, skipping label creation.")
             return df
 
-        # future_scrap = 1 if scrap occurs within next N cycles
+        # future_scrap = 1 if scrap occurs within next N minutes
         def check_future_scrap(group):
             group = group.sort_values("timestamp")
-            group["future_scrap"] = (
-                group["is_scrap"][::-1]
-                .rolling(window=self.cycle_look_ahead, min_periods=1)
-                .max()[::-1]
+            scrap_events = group[group["is_scrap"] == 1][["timestamp"]].copy()
+            if scrap_events.empty:
+                group["future_scrap"] = 0
+                return group
+
+            scrap_events["scrap_ts"] = scrap_events["timestamp"]
+            merged = pd.merge_asof(
+                group[["timestamp"]],
+                scrap_events,
+                on="timestamp",
+                direction="forward"
             )
+            time_diff = (merged["scrap_ts"] - group["timestamp"]).dt.total_seconds()
+            group["future_scrap"] = ((time_diff <= self.lookahead_minutes * 60) & (time_diff >= 0)).astype(int)
             return group
 
         df = df.groupby("machine_id", group_keys=False).apply(check_future_scrap)
@@ -205,13 +214,13 @@ class ManufacturingPreprocessor:
         pos_ratio = df["future_scrap"].mean() * 100
         self._log_step(
             "Target Label Creation",
-            f"Created 'future_scrap' label predicting scrap within next {self.cycle_look_ahead} cycles. Positive class ratio: {pos_ratio:.2f}%",
+            f"Created 'future_scrap' label predicting scrap within next {self.lookahead_minutes} minutes. Positive class ratio: {pos_ratio:.2f}%",
         )
         return df
 
     def select_features(self, df):
         """Step 7 - Feature Selection"""
-        exclude_cols = ["machine_id", "timestamp", "is_scrap", "future_scrap"]
+        exclude_cols = ["machine_id", "timestamp", "is_scrap", "future_scrap", "scrap_weight", "scrap_quantity"]
 
         # Feature columns are everything else
         feature_cols = [c for c in df.columns if c not in exclude_cols]
@@ -224,6 +233,8 @@ class ManufacturingPreprocessor:
 
     def drop_unused_columns(self, df):
         """Step 8 - Drop Non-Model Columns"""
+        # Note: 'scrap_weight' and 'scrap_quantity' are intentionally excluded from
+        # this drop list so they survive to the final output file.
         drop_cols = ["machine_id", "timestamp", "is_scrap"]
         present_cols = [c for c in drop_cols if c in df.columns]
         df = df.drop(columns=present_cols)
@@ -286,5 +297,5 @@ if __name__ == "__main__":
         logging.error(f"Input file not found: {args.input}")
         sys.exit(1)
 
-    preprocessor = ManufacturingPreprocessor(cycle_look_ahead=10)
+    preprocessor = ManufacturingPreprocessor(lookahead_minutes=5)
     _ = preprocessor.run_pipeline(args.input, output_dir=args.outdir)

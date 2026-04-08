@@ -18,10 +18,12 @@ from backend.ml_inference_v4 import predict_scrap_probability
 # ── Per-machine sensor buffer ───────────────────────────────────────
 live_buffer: Dict[str, Dict[str, float]] = {}
 
-# ── Per-machine state tracker (last 3 snapshots for frozen detection) ──
-_state_history: Dict[str, deque] = {}
-_STATE_HISTORY_SIZE = 3
+import pandas as pd
+from backend.data_access import build_realtime_model_vector
 
+# ── Per-machine state tracker (last 35 snapshots for rolling/lags) ──
+_state_history: Dict[str, deque] = {}
+_STATE_HISTORY_SIZE = 35
 
 def _is_frozen_or_offline(machine_id: str, current_state: Dict[str, float]) -> bool:
     """
@@ -29,19 +31,16 @@ def _is_frozen_or_offline(machine_id: str, current_state: Dict[str, float]) -> b
       1. Cycle_time <= 0.1  (machine not cycling)
       2. Current sensor snapshot is identical to the previous one (frozen PLC)
     """
-    # Check 1: low / zero Cycle_time
     cycle_time = current_state.get("Cycle_time", None)
     if cycle_time is not None and cycle_time <= 0.1:
         return True
 
-    # Check 2: compare with previous snapshot
     if machine_id not in _state_history:
         _state_history[machine_id] = deque(maxlen=_STATE_HISTORY_SIZE)
 
     history = _state_history[machine_id]
     if len(history) > 0:
         prev = history[-1]
-        # If every sensor that exists in both snapshots has the same value → frozen
         shared_keys = set(current_state.keys()) & set(prev.keys())
         if shared_keys and all(current_state[k] == prev[k] for k in shared_keys):
             return True
@@ -50,31 +49,16 @@ def _is_frozen_or_offline(machine_id: str, current_state: Dict[str, float]) -> b
     history.append(dict(current_state))
     return False
 
-
 def predict_from_raw(machine_id: str, raw_data: Dict[str, Any]) -> dict:
     """
     Accept one incoming sensor reading, buffer it, and return a live risk score.
-
-    Parameters
-    ----------
-    machine_id : str
-        Identifier for the machine (e.g. "M231").
-    raw_data : dict
-        Must contain at least ``variable_name`` and ``value``.
-        May also contain ``timestamp`` (ignored for prediction).
-
-    Returns
-    -------
-    dict with keys: status, machine_id, risk_score, sensors_buffered
     """
     var_name = raw_data.get("variable_name")
     val = raw_data.get("value")
 
-    # Initialise buffer for this machine if first time
     if machine_id not in live_buffer:
         live_buffer[machine_id] = {}
 
-    # Update the machine's buffer with the newest sensor reading
     if var_name is not None and val is not None:
         live_buffer[machine_id][var_name] = float(val)
 
@@ -90,7 +74,14 @@ def predict_from_raw(machine_id: str, raw_data: Dict[str, Any]) -> dict:
         }
 
     # ── Build feature row and score ─────────────────────────────
-    risk_score = float(predict_scrap_probability(current_state))
+    # Convert history buffer into a DataFrame to compute rolling/lag features mathematically
+    history_df = pd.DataFrame(list(_state_history[machine_id]))
+    
+    # Calculate the exact features the Kaggle model expects (includes all rolling means/stds)
+    full_feature_vector = build_realtime_model_vector(history_df, machine_norm=machine_id)
+    
+    # Predict using the fully expanded vector
+    risk_score = float(predict_scrap_probability(full_feature_vector))
 
     return {
         "machine_id": machine_id,

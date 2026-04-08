@@ -2,6 +2,7 @@ import pandas as pd
 import os
 import gc
 import argparse
+import re
 from pathlib import Path
 
 # Only merge sensors against scrap logged during production status
@@ -40,13 +41,19 @@ def main():
     print("   Using Status 200 + 5-min point merge logic")
 
     # 1. Load Hydra Scrap Events
-    hydra_path = proc_dir / "HYDRA_TRAIN.parquet"
-    if not hydra_path.exists():
-        print(f"❌ Error: Could not find '{hydra_path}'. Did you run Step 1?")
+    hydra_files = list(proc_dir.glob("*HYDRA_TRAIN.parquet"))
+    if not hydra_files:
+        print(f"❌ Error: Could not find any *HYDRA_TRAIN.parquet files in '{proc_dir}'. Did you run Step 1?")
         return
         
-    print("\n⏳ Loading Hydra Scrap Events...")
-    hydra_df = pd.read_parquet(hydra_path)
+    print(f"\n⏳ Loading {len(hydra_files)} Hydra Scrap Event files...")
+    hydra_dfs = [pd.read_parquet(f) for f in hydra_files]
+    hydra_df = pd.concat(hydra_dfs, ignore_index=True)
+    
+    hydra_df = hydra_df.drop_duplicates(subset=[
+        'machine_id', 'machine_event_create_date', 
+        'machine_event_create_time', 'scrap_quantity'
+    ])
     scrap_source = hydra_df[hydra_df['scrap_quantity'] > 0].copy()
 
     if 'machine_status_code' in hydra_df.columns:
@@ -67,12 +74,13 @@ def main():
     master_train_dfs = []
     
     # 2. Process Machine Files
-    train_files = [f for f in os.listdir(proc_dir) if f.endswith("_TRAIN.parquet") and "HYDRA" not in f and "MERGED" not in f]
+    train_files = [f for f in os.listdir(proc_dir) if f.endswith("_TRAIN.parquet") and "HYDRA" not in f and "MERGED" not in f and "FINAL" not in f]
     print(f"\n   -> Found {len(train_files)} Machine Parquet files.")
 
     for file in train_files:
-        machine_id_raw = file.split('_')[0]
-        machine_id = machine_id_raw.replace('-', '').upper().strip()
+        tokens = file.replace('.parquet', '').split('_')
+        machine_id_raw = next((t for t in tokens if re.match(r'^M\d+$', t)), tokens[0])
+        machine_id = machine_id_raw.upper().strip()
 
         print(f"\n⚙️  Processing {machine_id_raw} (as {machine_id})...")
         df = pd.read_parquet(proc_dir / file)
@@ -96,24 +104,57 @@ def main():
         machine_scrap = scrap_source[scrap_source['machine_id_clean'] == machine_id][['merge_ts', 'scrap_quantity']].copy()
         machine_scrap = machine_scrap.rename(columns={'merge_ts': 'timestamp'})
         machine_scrap['is_scrap'] = 1
+        # Save the original scrap timestamp to calculate time difference
+        machine_scrap['scrap_timestamp'] = machine_scrap['timestamp']
         machine_scrap = machine_scrap.sort_values('timestamp')
 
         if not machine_scrap.empty:
             merged = pd.merge_asof(
                 pivot_df,
-                machine_scrap[['timestamp', 'is_scrap']],
+                machine_scrap[['timestamp', 'is_scrap', 'scrap_quantity', 'scrap_timestamp']],
                 on='timestamp',
-                direction='nearest',
-                tolerance=pd.Timedelta('5 minutes')
+                direction='forward',  # 'forward' is needed since scrap (right) is AFTER sensor (left)
+                tolerance=pd.Timedelta('2 minutes')
             )
             merged['is_scrap'] = merged['is_scrap'].fillna(0).astype(int)
+            merged['scrap_quantity'] = merged['scrap_quantity'].fillna(0)
+            
+            # direction='forward' means scrap_timestamp >= sensor timestamp
+            time_diff = (merged['scrap_timestamp'] - merged['timestamp']).dt.total_seconds()
+            
+            merged['scrap_weight'] = 1.0
+            
+            high_conf_mask = (merged['is_scrap'] == 1) & (time_diff < 30)
+            merged.loc[high_conf_mask, 'scrap_weight'] = 2.0
+            
+            matched_events = merged['scrap_timestamp'].dropna().nunique()
         else:
             pivot_df['is_scrap'] = 0
+            pivot_df['scrap_quantity'] = 0
+            pivot_df['scrap_weight'] = 1.0
             merged = pivot_df
+            matched_events = 0
 
         merged['machine_id'] = machine_id
-        scrap_pct = (merged['is_scrap'].sum() / len(merged)) * 100
-        print(f"   -> Final merged rows: {len(merged):,}. Scrap rate: {scrap_pct:.2f}%")
+        
+        # Calculate stats for the report
+        total_sensor_rows = len(merged)
+        scrap_rows = merged['is_scrap'].sum()
+        scrap_pct = (scrap_rows / total_sensor_rows) * 100 if total_sensor_rows > 0 else 0
+        
+        high_conf_rows = (merged['scrap_weight'] == 2.0).sum()
+        normal_conf_rows = scrap_rows - high_conf_rows
+        
+        total_hydra_events = len(machine_scrap)
+        unmatched_events = total_hydra_events - matched_events
+        
+        print(f"   -> Final merged rows: {total_sensor_rows:,}")
+        print(f"   -> Scrap rows (is_scrap=1): {scrap_rows:,} ({scrap_pct:.2f}%)")
+        print(f"   -> Confidence split: {high_conf_rows:,} high | {normal_conf_rows:,} normal")
+        print(f"   -> Hydra events match rate: {matched_events:,} matched | {unmatched_events:,} unmatched")
+        
+        if 'scrap_timestamp' in merged.columns:
+            merged = merged.drop(columns=['scrap_timestamp'])
         
         master_train_dfs.append(merged)
         del df, pivot_df, merged

@@ -674,7 +674,7 @@ def build_control_room_payload(
     current_risk = min(1.0, max(0.0, ml_risk))
 
     root_causes = []
-    if ml_risk > 0.25:
+    if ml_risk > 0.15:
         try:
             root_causes = compute_root_causes(model, feature_row, feature_names)
         except Exception:
